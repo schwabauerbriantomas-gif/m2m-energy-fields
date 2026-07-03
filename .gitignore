@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+.env
+.venv/
+venv/
+results/*
+!results/.gitkeep
+!results/reference_results_llada8b.jsonl

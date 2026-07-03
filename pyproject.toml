@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m2m-energy-fields"
+version = "0.1.0"
+description = "Energy-based guidance fields for steering masked diffusion language models"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "m2m"}]
+
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.46",
+    "sentence-transformers",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dllm = [
+    # Requires manual install from https://github.com/ZHZisZZ/dllm
+]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
