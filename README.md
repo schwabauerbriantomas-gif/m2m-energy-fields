@@ -1,11 +1,15 @@
-# m2m-energy-fields
-
 <div align="center">
 
-**Energy-based guidance fields for steering masked diffusion language models.**
+# m2m-energy-fields
 
-Inject semantic energy directions into each denoising step of discrete text
-diffusion — steering generation toward a concept without mentioning it in the prompt.
+**Steer masked diffusion language models toward a topic without mentioning it in the prompt.**
+
+Energy fields injected at each denoising step steer generation toward a concept
+using dual-space embedding fusion — the topic never appears in the input.
+
+[![Tests](https://img.shields.io/badge/tests-63%20passing-brightgreen)](tests/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 </div>
 
