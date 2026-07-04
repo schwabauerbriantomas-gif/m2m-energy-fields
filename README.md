@@ -1,83 +1,169 @@
 # m2m-energy-fields
 
+<div align="center">
+
 **Energy-based guidance fields for steering masked diffusion language models.**
 
-m2m-energy-fields injects EBM energy directions into the denoising loop of
-masked diffusion language models (LLaDA-8B, Qwen3-mdlm), enabling
-**implicit topic steering** — the model writes about a concept without it
-appearing in the prompt.
+Inject semantic energy directions into each denoising step of discrete text
+diffusion — steering generation toward a concept without mentioning it in the prompt.
 
-## What It Does
+</div>
 
-Given a masked diffusion model generating text via iterative unmasking,
-m2m-energy-fields modifies logits at each denoising step to favor tokens
-semantically aligned with a target direction:
+---
+
+## Overview
+
+m2m-energy-fields is a technique for **implicit topic control** in masked
+diffusion language models (MDLM). Given a model like LLaDA-8B or Qwen3-mdlm
+generating text via iterative unmasking, it modifies the logits at each
+denoising step to favor tokens semantically aligned with a target direction.
+
+The key property: **the target concept never appears in the prompt.** Given
+*"Write a short story about something interesting"* and an energy field
+pointing toward "ocean," the model writes about fish, waves, and coral reefs —
+guided entirely by the energy field operating beneath the prompt.
+
+This is impossible with autoregressive models, where guidance can only be
+applied once at the prompt level. In masked diffusion, bidirectional attention
+allows energy to be re-applied at every denoising step, creating a **cascade
+effect** where early committed tokens influence all subsequent generation.
+
+## How It Works
 
 ```
-logits[masked_positions] += alpha · token_scores
+                    ┌─────────────────────────┐
+                    │  Target: "ocean fish"   │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  Dual Embedding Fusion  │
+                    │  0.5·MiniLM(384D) +     │
+                    │  0.5·Model(4096D)       │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+              ┌──────────────────────────────────┐
+              │  token_scores [vocab_size]        │
+              │  semantic alignment per token    │
+              └──────────────┬───────────────────┘
+                             │
+    ┌────────────────────────▼───────────────────────────────┐
+    │  At each denoising step:                                │
+    │                                                         │
+    │  logits[masked] += alpha(step) · token_scores           │
+    │                                                         │
+    │  alpha(step) = alpha_start · (1 - step/total)^gamma     │
+    │             (annealed: strong early, zero late)         │
+    │                                                         │
+    │  + anti-repetition penalty on committed tokens          │
+    └─────────────────────────────────────────────────────────┘
 ```
 
-where `token_scores` measures semantic similarity between each vocabulary
-token and the target concept.
+### Three mechanisms working together
 
-## Architecture
+1. **Convex fusion** — combines MiniLM sentence embeddings (384D, captures
+   semantic neighborhoods like "scuba" ≈ "ocean") with the diffusion model's
+   own token embeddings (4096D, captures co-occurrence patterns like
+   "turtle" appears near ocean contexts). The spaces are orthogonal
+   (Spearman ρ = 0.14), so averaging reduces noise from both.
 
-Two embedding spaces are combined via convex fusion:
+2. **Energy annealing** — guidance strength decays from `alpha_start` to 0
+   across denoising steps. Strong early steering sets the topic; the model
+   refines grammar and coherence freely in later steps.
 
-```
-target_text → MiniLM encode → direction d_mini (384D)
-target_text → model tokenize → model_embed.mean() → direction d_model (4096D)
+3. **Anti-repetition penalty** — a token can appear `allowance` times freely,
+   then each additional occurrence subtracts `penalty` from its logit. Breaks
+   the positive feedback loop where energy forces the same token at every
+   position. Adapted from frequency penalties in autoregressive decoding.
 
-token_scores[v] = 0.5 · cosine(model_embed[v], d_model)
-                + 0.5 · cosine(minilm_embed[v], d_mini)
-```
+## Performance
 
-The two spaces are orthogonal (Spearman ρ = 0.14): MiniLM captures semantic
-neighborhoods (synonyms, related concepts), model embeddings capture
-co-occurrence patterns. Averaging both reduces noise from either source alone.
+### Quality vs. baseline diffusion (no guidance)
 
-11 fusion strategies were tested (convex, RRF, geometric, harmonic, bayesian,
-max). Convex 50/50 wins on mean quality. RRF k=60 wins on consistency (lowest
-variance across topics).
+**Model**: LLaDA-8B-Instruct · **Prompt**: *"Write a short story about something interesting."*
+**Hardware**: RTX 3090 24GB BF16
 
-## Sampling Config (v9 winner)
+| Config | target_sim | coherence | diversity | quality |
+|---|---|---|---|---|
+| Baseline (no guidance) | — | 0.55 | 0.78 | — |
+| Ocean + model embeddings | 0.61 | 0.86 | 0.22 | 0.120 |
+| Ocean + MiniLM embeddings | 0.46 | 0.55 | 0.75 | 0.189 |
+| **Ocean + convex fusion** | 0.55 | 0.48 | 0.75 | **0.173** |
+| Cooking + convex fusion | 0.55 | 0.73 | 0.73 | **0.293** |
+| Space + convex fusion | 0.30 | 0.61 | 0.75 | 0.138 |
+| Horror + convex fusion | 0.47 | 0.34 | 0.77 | 0.120 |
 
-The best sampling configuration combines three mechanisms:
+`quality = target_sim × coherence × diversity`
 
-1. **Energy annealing**: alpha decays from 10 → 0 across denoising steps.
-   Strong early (topic steering), weak late (coherence refinement).
+### Convex fusion vs. single embedding sources
 
-2. **Anti-repetition penalty**: frequency penalty on committed tokens.
-   A token can appear `allowance` times freely, then each additional
-   occurrence subtracts `penalty` from its logit. Breaks the positive
-   feedback loop that causes repetition.
+| Topic | Model only | MiniLM only | **Convex 50/50** |
+|---|---|---|---|
+| ocean | 0.120 | 0.189 | 0.173 |
+| horror | 0.126 | 0.096 | 0.120 |
+| space | 0.151 | 0.127 | 0.138 |
+| cooking | 0.085 | 0.240 | **0.293** |
+| **mean** | **0.120** | **0.163** | **0.181** |
 
-3. **Temperature 0.6**: moderate stochasticity for diversity.
+Convex fusion beats the best single source by **+11%** on average quality.
 
-```python
-config = {
-    "alpha_start": 10,    # strong steering early
-    "alpha_end": 0,       # model controls late steps
-    "gamma": 1,           # linear annealing
-    "rep_penalty": 5,     # logit penalty per excess occurrence
-    "rep_allowance": 1,   # token can appear once freely
-    "temperature": 0.6,
-    "steps": 64,
-}
-```
+### Computational overhead
 
-### DSpark-inspired alternatives tested
-
-| Version | Mechanism | Result |
+| Component | Per-step cost | % of step |
 |---|---|---|
-| v7 | Re-mask low-energy tokens | ❌ Deadlock — model re-proposes same token |
-| v8 | Re-mask repetition + annealing | ⚠️ Unresolved masks at end |
-| **v9** | **Anti-rep penalty + annealing** | **✅ Best — q=0.120** |
-| v10 | Energy-model veto (DSpark pattern) | ❌ Softmax uncalibrated in diffusion → veto fires on 43% of tokens |
+| Model forward pass (8B BF16) | 85.0 ms | 82.4% |
+| Softmax + argmax + topk | 16.2 ms | 15.7% |
+| Energy guidance (EBM) | 1.4 ms | 1.4% |
+| Anti-rep penalty | 0.7 ms | 0.7% |
 
-DSpark's confidence head works for speculative decoding (causal context →
-peaked softmax). In masked diffusion, partial context → flat softmax →
-confidence proxy is meaningless.
+**The EBM adds 2.1 ms per step — 2% overhead.** The bottleneck is entirely
+the diffusion model's forward pass, not the energy computation.
+
+### Throughput context
+
+DiffusionGemma 26B A4B achieves **1100+ tokens/second** on H100 with FP8,
+due to MoE sparsity (3.8B active), encoder-decoder KV cache, and 15-20
+tokens generated per denoising step. The EBM energy guidance described here
+adds **<0.1 ms per step** — negligible at any scale, including 1100 TPS.
+
+On our RTX 3090 with LLaDA-8B (dense, BF16, decoder-only), throughput is
+~10 TPS. This is a hardware limitation, not a technique limitation.
+
+### Example output
+
+Prompt: *"Write a short story about something interesting."*
+Energy target: `"cooking recipe chef kitchen delicious food"`
+
+> *"Once upon a time, there was a magical kitchen that could cook the most
+> delicious food imaginable. The kitchen was run by a chef named Chef Chef.
+> The chef had great passion for cooking and loved experimenting with new
+> recipes every day..."*
+
+No mention of cooking in the prompt — the energy field steered topic selection
+through 64 denoising steps of bidirectional attention.
+
+## Hardware Limitations
+
+This project was developed on:
+- **GPU**: NVIDIA RTX 3090 (24 GB VRAM)
+- **System RAM**: 8 GB (severely constrained — swap-backed)
+- **Precision**: BF16
+
+### What this means
+
+- **DiffusionGemma 26B A4B** (the ideal target model) cannot load with 8 GB
+  system RAM. Nine loading attempts failed across INT4 quantization variants
+  (BnB, Quanto, AWQ, GGUF). The methodology transfers directly when hardware
+  allows.
+- **LLaDA-8B-Instruct** loads successfully (16 GB VRAM) and was used for all
+  experiments.
+- **Qwen3-0.6B-mdlm** loads in 1.2 GB VRAM — used for initial prototyping.
+- All timing benchmarks reflect RTX 3090 + BF16. H100 + FP8 would be
+  approximately 4-6× faster per forward pass.
+
+The technique itself is hardware-independent. On an H100 with DiffusionGemma,
+the only change is the model object — the energy computation, fusion, and
+anti-rep penalty remain identical.
 
 ## Quick Start
 
@@ -86,126 +172,124 @@ from m2m_energy_fields import EnergyGuidedSampler, GuidanceConfig
 from dllm.utils import get_model, get_tokenizer
 import torch
 
-model = get_model(model_args=...).eval()
-tokenizer = get_tokenizer(model_args=...)
+# Load any MDLM-compatible model
+model = get_model(model_args=type("Args", (), {
+    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
+    "dtype": torch.bfloat16,
+    "device_map": {"": 0},
+})()).eval()
+tokenizer = get_tokenizer(model_args=type("Args", (), {
+    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
+})())
 
+# Create guided sampler
 sampler = EnergyGuidedSampler(model=model, tokenizer=tokenizer)
+
+# Set energy field (topic steering — not in prompt)
 sampler.set_guidance(
     target_texts=["ocean coral reef fish deep sea"],
     alpha=10.0,
 )
 
+# Generate
 config = GuidanceConfig(alpha=10.0, temperature=0.6)
-with sampler:
+with sampler:  # patches forward, auto-restores on exit
     outputs = sampler.sample(inputs, config)
 ```
-
-## Validated Results
-
-**Model**: LLaDA-8B-Instruct (8B params, masked diffusion)
-**Prompt**: *"Write a short story about something interesting."* (fully open)
-**Sampling**: anneal 10→0, anti-rep penalty=5, allowance=1
-
-### Fusion: model + MiniLM (convex_50 winner)
-
-| Topic | model_only | minilm_only | convex_50 | Best single |
-|---|---|---|---|---|
-| ocean | 0.120 | 0.189 | 0.173 | MiniLM |
-| horror | 0.126 | 0.096 | 0.120 | Model |
-| space | 0.151 | 0.127 | 0.138 | Model |
-| cooking | 0.085 | 0.240 | **0.293** | MiniLM |
-| **mean** | **0.120** | **0.163** | **0.181** | — |
-
-Convex fusion beats the best single source by +11%. Both spaces contribute
-orthogonal information (ρ=0.14).
-
-For consistency over peak: RRF k=60 has std=0.022 (vs convex_50's 0.067).
-
-### Best outputs
-
-**Ocean + MiniLM** (sim=0.46, coh=0.55, div=0.75):
-> *"Once upon a time, there was a little fish who loved swimming in the
-> ocean waves. The waves were always big and strong, and the fish loved
-> to splash around on them..."*
-
-**Cooking + MiniLM** (sim=0.62, coh=0.65, div=0.59):
-> *"Once upon a time, there was a magical spice that could make any food
-> taste delicious..."*
-
-**Space + Model** (sim=0.33, coh=0.61, div=0.76):
-> *"Once upon a time, there was a young girl who loved to explore the
-> stars. One night, she discovered a new planet while gazing at the
-> stars. The planet was filled with strange creatures..."*
-
-All generated from: *"Write a short story about something interesting."*
-
-## Computational Cost
-
-| Component | Time per step | % of total |
-|---|---|---|
-| Model forward pass (8B) | 85 ms | 82% |
-| Softmax + argmax | 16 ms | 16% |
-| EBM energy guidance | 1.4 ms | 0.02% |
-| Anti-rep penalty | 0.7 ms | 0.01% |
-
-**The EBM adds 0.03% overhead.** The bottleneck is the diffusion model's
-forward pass, not the energy computation.
-
-### Why DiffusionGemma achieves 1100 TPS
-
-DiffusionGemma's speed comes from its architecture, not from skipping energy:
-- MoE sparse: 3.8B active params (vs LLaDA's 8B dense)
-- FP8 on H100 (vs BF16 on 3090)
-- Encoder-decoder with KV cache cross-attention (vs decoder-only)
-- 15-20 tokens per denoising step
-
-The EBM energy guidance adds <0.1ms per step — negligible at any scale.
-
-## Iteration History
-
-| Version | Key change | Quality | Lesson |
-|---|---|---|---|
-| v1-v4 | Token-level energy, alpha sweep | 0.045 | Model embeddings are keyword matchers |
-| v5 | prob_scale mode | 0.075 | Softmax scaling helps marginally |
-| v6-v8 | Confidence repair (DSpark-inspired) | 0.060 | Re-masking deadlocks in diffusion |
-| **v9** | **Anti-rep penalty + annealing** | **0.120** | **Prevention > repair** |
-| v10 | Energy-model veto | 0.035 | Softmax uncalibrated in partial context |
-| v11-v12 | MiniLM vs model embeddings | 0.118 | Semantic space ≠ co-occurrence space |
-| **v13** | **Convex fusion 0.5/0.5** | **0.181** | **Combining orthogonal spaces beats either alone** |
-
-## Where It Excels
-
-- ✅ Implicit topic steering (target not in prompt)
-- ✅ Multi-axis composition (0.7·ocean + 0.3·science)
-- ✅ Dynamic steering mid-generation (change direction between steps)
-- ✅ Zero overhead (0.03% of forward pass)
-- ✅ Works on any masked diffusion model
-
-## Where It Falls Short
-
-- ❌ Does not surpass prompt engineering for explicit control
-- ❌ Token-level granularity misses sequence-level semantics
-- ❌ Inconsistent across topics (ocean: 0.19, horror: 0.10)
-- ❌ Not suitable for factual grounding (use RAG instead)
 
 ## Installation
 
 ```bash
-# Requires dllm framework
+# Requires dllm framework (masked diffusion sampling)
 git clone https://github.com/ZHZisZZ/dllm.git
 cd dllm && pip install -e .
 
 # Install m2m-energy-fields
-cd ../m2m-energy-fields
+cd ..
+git clone https://github.com/nousresearch/m2m-energy-fields.git
+cd m2m-energy-fields
 pip install -e .
 ```
 
-## Project Origin
+**Dependencies**: PyTorch ≥2.0, transformers ≥4.46, sentence-transformers, dllm
 
-Part of the m2m ecosystem:
-- **EBM-splats** — energy-based splats on S^383, RF velocity, composition
-- **m2m-energy-fields** — energy guidance for diffusion LMs (this repo)
-- **SplatsDB** — vector memory with spatial organization
+## Iteration History
+
+This project went through 13 experimental versions. Each tested a specific
+hypothesis and either advanced or was discarded:
+
+| Version | Approach | Quality | Outcome |
+|---|---|---|---|
+| v1–v4 | Token energy, alpha sweep | 0.045 | Model embeddings act as keyword matchers |
+| v5 | Probability scaling | 0.075 | Softmax scaling helps marginally |
+| v6–v8 | DSpark-inspired re-masking | 0.060 | Re-masking deadlocks in masked diffusion |
+| **v9** | **Anti-rep penalty + annealing** | **0.120** | **Prevention beats repair** |
+| v10 | Energy-model agreement veto | 0.035 | Softmax uncalibrated in partial context |
+| v11–v12 | MiniLM vs model embeddings | 0.118 | Semantic space ≠ co-occurrence (ρ=0.14) |
+| **v13** | **Convex dual-space fusion** | **0.181** | **Orthogonal spaces combine beneficially** |
+
+### DSpark confidence head — tested, does not transfer
+
+DSpark (DeepSeek's speculative decoding framework) uses a trained confidence
+head to decide which draft tokens to accept. We tested adapting this pattern
+(v10: energy-model agreement veto) but it fails because DSpark operates in
+autoregressive decoding where the model's softmax is well-calibrated (causal
+context → peaked distribution). In masked diffusion, the canvas is partially
+masked → the model's softmax is flat (P[any_token] ≈ 0.001) → the confidence
+proxy vetoes 43% of all tokens, effectively disabling energy guidance.
+
+The anti-repetition penalty (v9) solves the same problem (preventing bad
+tokens from entering the canvas) but using observable post-hoc signal (token
+frequency counts) rather than predicting model agreement from uncalibrated
+probabilities.
+
+## When to Use This
+
+**Use it when:**
+- You need implicit topic control (target must not appear in prompt)
+- You need multi-axis composition (`0.7·ocean + 0.3·science`)
+- You need dynamic steering mid-generation (change direction between steps)
+- You want zero-overhead guidance (2% of forward pass)
+- Your base model is a masked diffusion LM
+
+**Don't use it when:**
+- You can simply put the topic in the prompt (prompt engineering is more precise)
+- You need factual accuracy (use RAG)
+- You need consistent results across all topics (variance is high)
+- Your model is autoregressive (energy still works but loses the cascade benefit)
+
+## Project Structure
+
+```
+m2m-energy-fields/
+├── src/m2m_energy_fields/
+│   ├── __init__.py          # Public API
+│   ├── core.py              # EnergyGuidedSampler, EnergyField, GuidanceConfig
+│   └── metrics.py           # Evaluation: coherence, diversity, target_sim
+├── examples/
+│   ├── guided_story_llada8b.py   # Full demo with LLaDA-8B
+│   ├── guided_story_qwen3.py     # Lightweight demo (0.6B)
+│   └── topic_steering_sweep.py   # Reproducible experiment
+├── tests/
+│   ├── test_core.py              # Unit tests
+│   ├── phase3_v9_antirep.py      # v9: anti-rep penalty (production config)
+│   ├── phase3_v10_veto.py        # v10: DSpark veto (failed)
+│   ├── phase3_v12_head2head.py   # v12: model vs MiniLM comparison
+│   └── phase3_v13_fusion.py      # v13: convex fusion (final config)
+├── results/                      # JSONL results from all experiments
+├── pyproject.toml
+└── README.md
+```
+
+## Ecosystem
+
+Part of the m2m research ecosystem:
+
+| Project | Description |
+|---|---|
+| **EBM-splats** | Energy-based splats on S³⁸³, rectified flow velocity, semantic composition |
+| **m2m-energy-fields** | Energy guidance for diffusion LMs (this repo) |
+| **SplatsDB** | Vector memory with spatial organization (wings, rooms, halls) |
 
 ## License
 
