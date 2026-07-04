@@ -20,6 +20,8 @@ from .core import (
     compute_minilm_scores,
     fuse_convex,
     fuse_rrf,
+    alpha_schedule,
+    penalty_schedule,
 )
 from .metrics import evaluate_guidance, coherence_score, repetition_ratio
 
@@ -32,6 +34,8 @@ __all__ = [
     "compute_minilm_scores",
     "fuse_convex",
     "fuse_rrf",
+    "alpha_schedule",
+    "penalty_schedule",
     "evaluate_guidance",
     "coherence_score",
     "repetition_ratio",

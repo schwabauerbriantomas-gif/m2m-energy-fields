@@ -117,6 +117,43 @@ def fuse_rrf(model_scores: torch.Tensor, minilm_scores: torch.Tensor, k: int = 6
     return 1.0 / (k + rank_m + 1) + 1.0 / (k + rank_n + 1)
 
 
+# ── Scheduling functions ──
+
+def alpha_schedule(
+    step: int,
+    total_steps: int,
+    alpha_start: float = 10.0,
+    alpha_end: float = 0.0,
+    gamma: float = 1.0,
+) -> float:
+    """
+    Energy annealing schedule: alpha decays from alpha_start to alpha_end
+    over the denoising steps.
+
+    alpha(step) = alpha_start * decay + alpha_end * (1 - decay)
+    where decay = max(1 - step/(total-1), 0) ^ gamma
+
+    gamma=1 → linear decay, gamma=2 → quadratic (slower start, faster end).
+    """
+    progress = step / max(total_steps - 1, 1)
+    decay = max(1.0 - progress, 0.0) ** gamma
+    return alpha_start * decay + alpha_end * (1.0 - decay)
+
+
+def penalty_schedule(
+    step: int,
+    total_steps: int,
+    rep_penalty: float = 5.0,
+) -> float:
+    """
+    Anti-repetition penalty schedule: linear ramp from 0 to rep_penalty.
+
+    Weak early (let topic emerge), strong late (prevent collapse).
+    """
+    progress = step / max(total_steps - 1, 1)
+    return rep_penalty * progress
+
+
 # ── Score computation ──
 
 def compute_model_scores(
@@ -309,14 +346,10 @@ class EnergyGuidedSampler:
         token_counts = torch.zeros(B, self.vocab_size, device=DEVICE)
 
         def alpha_at(step):
-            progress = step / max(total_steps - 1, 1)
-            decay = max(1.0 - progress, 0.0) ** config.gamma
-            return config.alpha * decay + config.alpha_end * (1.0 - decay)
+            return alpha_schedule(step, total_steps, config.alpha, config.alpha_end, config.gamma)
 
         def penalty_at(step):
-            # Linear ramp from 0 to rep_penalty over generation
-            progress = step / max(total_steps - 1, 1)
-            return config.rep_penalty * progress
+            return penalty_schedule(step, total_steps, config.rep_penalty)
 
         # ── Denoising loop ──
         global_step = 0
