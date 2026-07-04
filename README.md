@@ -119,15 +119,22 @@ Convex fusion beats the best single source by **+11%** on average quality.
 **The EBM adds 2.1 ms per step — 2% overhead.** The bottleneck is entirely
 the diffusion model's forward pass, not the energy computation.
 
-### Throughput context
+### Throughput
 
-DiffusionGemma 26B A4B achieves **1100+ tokens/second** on H100 with FP8,
-due to MoE sparsity (3.8B active), encoder-decoder KV cache, and 15-20
-tokens generated per denoising step. The EBM energy guidance described here
-adds **<0.1 ms per step** — negligible at any scale, including 1100 TPS.
+All measurements are from a single RTX 3090 with LLaDA-8B-Instruct (BF16,
+64 denoising steps, 200-token canvas):
 
-On our RTX 3090 with LLaDA-8B (dense, BF16, decoder-only), throughput is
-~10 TPS. This is a hardware limitation, not a technique limitation.
+- **Total generation time**: 6.6 s (102.9 ms × 64 steps)
+- **Effective throughput**: ~30 TPS (tokens committed per second of wall time)
+- **EBM overhead per step**: 2.1 ms (1.4 ms energy + 0.7 ms anti-rep penalty)
+- **EBM as fraction of step**: 2.0%
+
+The bottleneck is the model forward pass at 85 ms/step (82% of wall time).
+Scaling to faster hardware or sparser models (MoE, FP8) would reduce the
+forward pass proportionally — the EBM's 2.1 ms is fixed-cost tensor ops
+(scatter_add, cosine similarity) that do not scale with model size.
+
+No measurements were taken on hardware other than the RTX 3090.
 
 ### Example output
 
@@ -158,12 +165,14 @@ This project was developed on:
 - **LLaDA-8B-Instruct** loads successfully (16 GB VRAM) and was used for all
   experiments.
 - **Qwen3-0.6B-mdlm** loads in 1.2 GB VRAM — used for initial prototyping.
-- All timing benchmarks reflect RTX 3090 + BF16. H100 + FP8 would be
-  approximately 4-6× faster per forward pass.
+- All timing benchmarks reflect RTX 3090 + BF16. No measurements were taken
+  on other GPUs or precisions.
 
-The technique itself is hardware-independent. On an H100 with DiffusionGemma,
-the only change is the model object — the energy computation, fusion, and
-anti-rep penalty remain identical.
+The technique itself is hardware-independent. The energy computation,
+fusion, and anti-rep penalty operate on logits and token counts — they are
+model-agnostic and do not depend on the underlying architecture being
+autoregressive or diffusion-based. The only requirement is access to the
+logits at each denoising step.
 
 ## Quick Start
 
