@@ -39,11 +39,10 @@ try:
     from dllm.core.samplers.mdlm import MDLMSampler, MDLMSamplerConfig
     from dllm.core.samplers.utils import get_num_transfer_tokens, add_gumbel_noise
     from dllm.core.schedulers import LinearAlphaScheduler
+
+    DLLM_AVAILABLE = True
 except ImportError:
-    raise ImportError(
-        "dllm framework is required.\n"
-        "Install: git clone https://github.com/ZHZisZZ/dllm.git && cd dllm && pip install -e ."
-    )
+    DLLM_AVAILABLE = False
 
 try:
     from sentence_transformers import SentenceTransformer
