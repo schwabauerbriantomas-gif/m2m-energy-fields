@@ -22,31 +22,23 @@ token and the target concept.
 
 ## Architecture
 
-Two energy sources were tested head-to-head:
-
-### Model Embeddings (4096D)
+Two embedding spaces are combined via convex fusion:
 
 ```
-target_text → tokenize → model_embed.mean() → direction d (4096D)
-token_scores[v] = cosine(model_embed[v], d)
+target_text → MiniLM encode → direction d_mini (384D)
+target_text → model tokenize → model_embed.mean() → direction d_model (4096D)
+
+token_scores[v] = 0.5 · cosine(model_embed[v], d_model)
+                + 0.5 · cosine(minilm_embed[v], d_mini)
 ```
 
-Captures co-occurrence patterns. Strong raw similarity but produces
-repetitive text ("deep sea fish deep sea fish").
+The two spaces are orthogonal (Spearman ρ = 0.14): MiniLM captures semantic
+neighborhoods (synonyms, related concepts), model embeddings capture
+co-occurrence patterns. Averaging both reduces noise from either source alone.
 
-### MiniLM Semantic (384D) ← recommended
-
-```
-target_text → MiniLM encode → direction d (384D)
-token_scores[v] = cosine(MiniLM_embed[v], d)
-```
-
-Captures semantic neighborhoods. Finds tokens the model space misses
-("Waves", "scuba", "Coral", "Divers") and produces more natural text
-("a little fish who loved swimming in the ocean waves").
-
-**Spearman rank correlation between the two spaces: ρ = 0.14** — they rank
-tokens in fundamentally different ways.
+11 fusion strategies were tested (convex, RRF, geometric, harmonic, bayesian,
+max). Convex 50/50 wins on mean quality. RRF k=60 wins on consistency (lowest
+variance across topics).
 
 ## Sampling Config (v9 winner)
 
@@ -114,23 +106,20 @@ with sampler:
 **Prompt**: *"Write a short story about something interesting."* (fully open)
 **Sampling**: anneal 10→0, anti-rep penalty=5, allowance=1
 
-### Model Embeddings vs MiniLM (head-to-head)
+### Fusion: model + MiniLM (convex_50 winner)
 
-| Topic | Embedding | sim | coherence | diversity | quality |
-|---|---|---|---|---|---|
-| ocean | model | 0.60 | 0.91 | 0.22 | 0.120 |
-| ocean | **MiniLM** | 0.46 | 0.58 | **0.74** | **0.189** |
-| cooking | model | 0.43 | 0.84 | 0.24 | 0.085 |
-| cooking | **MiniLM** | **0.62** | 0.65 | **0.59** | **0.240** |
-| space | **model** | **0.33** | 0.61 | 0.76 | **0.151** |
-| space | MiniLM | 0.26 | 0.64 | 0.77 | 0.127 |
-| horror | **model** | **0.23** | 0.68 | 0.78 | **0.104** |
-| horror | MiniLM | 0.24 | 0.52 | 0.77 | 0.096 |
+| Topic | model_only | minilm_only | convex_50 | Best single |
+|---|---|---|---|---|
+| ocean | 0.120 | 0.189 | 0.173 | MiniLM |
+| horror | 0.126 | 0.096 | 0.120 | Model |
+| space | 0.151 | 0.127 | 0.138 | Model |
+| cooking | 0.085 | 0.240 | **0.293** | MiniLM |
+| **mean** | **0.120** | **0.163** | **0.181** | — |
 
-**Overall**: MiniLM quality = 0.118, Model quality = 0.111 (+0.7% MiniLM)
+Convex fusion beats the best single source by +11%. Both spaces contribute
+orthogonal information (ρ=0.14).
 
-MiniLM wins on topics with rich semantic neighborhoods (ocean, cooking).
-Model wins on topics where co-occurrence patterns are distinctive (space).
+For consistency over peak: RRF k=60 has std=0.022 (vs convex_50's 0.067).
 
 ### Best outputs
 
@@ -182,6 +171,7 @@ The EBM energy guidance adds <0.1ms per step — negligible at any scale.
 | **v9** | **Anti-rep penalty + annealing** | **0.120** | **Prevention > repair** |
 | v10 | Energy-model veto | 0.035 | Softmax uncalibrated in partial context |
 | v11-v12 | MiniLM vs model embeddings | 0.118 | Semantic space ≠ co-occurrence space |
+| **v13** | **Convex fusion 0.5/0.5** | **0.181** | **Combining orthogonal spaces beats either alone** |
 
 ## Where It Excels
 
