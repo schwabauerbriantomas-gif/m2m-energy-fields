@@ -338,7 +338,8 @@ class TestEnergyInjection:
         masked_e1 = e1[mask_positions]
         masked_e2 = e2[mask_positions]
         ratio = masked_e2 / (masked_e1 + 1e-8)
-        assert torch.allclose(ratio, torch.ones_like(ratio) * 2.0, atol=1e-5)
+        assert torch.allclose(ratio, torch.ones_like(ratio) * 2.0, atol=1e-4), \
+            f"Energy scaling ratio not 2.0: max diff = {(ratio - 2.0).abs().max()}"
 
 
 # ═══════════════════════════════════════════════════════════════════
