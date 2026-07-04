@@ -35,6 +35,7 @@ DSpark analogy:
   positions).
 """
 
+import os
 import sys
 import time
 import json
@@ -53,7 +54,7 @@ from dllm.utils import get_model, get_tokenizer
 
 DEVICE = "cuda"
 MODEL_ID = "GSAI-ML/LLaDA-8B-Instruct"
-RESULTS_FILE = "/root/m2m-energy-fields/results/phase3_v8_annealing_repair.jsonl"
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "results", "phase3_v8_annealing_repair.jsonl")
 
 
 def clean_response(text):

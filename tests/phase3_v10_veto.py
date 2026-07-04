@@ -42,6 +42,7 @@ COMBINED WITH ANNEALING:
   Late steps: alpha ~0, veto_threshold irrelevant → model controls freely
 """
 
+import os
 import sys, time, json, math
 import torch, torch.nn.functional as F, numpy as np
 from collections import defaultdict
@@ -55,7 +56,7 @@ from dllm.utils import get_model, get_tokenizer
 
 DEVICE = "cuda"
 MODEL_ID = "GSAI-ML/LLaDA-8B-Instruct"
-RESULTS_FILE = "/root/m2m-energy-fields/results/phase3_v10_veto.jsonl"
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "results", "phase3_v10_veto.jsonl")
 
 
 def clean_response(text):

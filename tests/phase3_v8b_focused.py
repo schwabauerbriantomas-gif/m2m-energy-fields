@@ -5,6 +5,7 @@ Reduced from v8: fewer configs, fewer steps, 1 trial each.
 Focus: does annealing (10→0) produce better quality than constant (5)?
 """
 
+import os
 import sys, time, json, math
 import torch, torch.nn.functional as F, numpy as np
 from sentence_transformers import SentenceTransformer
@@ -17,7 +18,7 @@ from dllm.utils import get_model, get_tokenizer
 
 DEVICE = "cuda"
 MODEL_ID = "GSAI-ML/LLaDA-8B-Instruct"
-RESULTS_FILE = "/root/m2m-energy-fields/results/phase3_v8b_focused.jsonl"
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "results", "phase3_v8b_focused.jsonl")
 
 
 def clean_response(text):

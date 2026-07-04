@@ -10,13 +10,14 @@ Usage:
 
 import torch
 import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from m2m_energy_fields import EnergyGuidedSampler, GuidanceConfig
 from m2m_energy_fields.metrics import evaluate_guidance
 from dllm.utils import get_model, get_tokenizer
-from sentence_transformers import SentenceTransformer
 
-DEVICE = "cuda"
 MODEL_ID = "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1"
 
 
@@ -46,13 +47,13 @@ def main():
     tokenizer = get_tokenizer(
         model_args=type("Args", (), {"model_name_or_path": MODEL_ID})()
     )
-    evaluator = SentenceTransformer(
-        "sentence-transformers/all-MiniLM-L6-v2", device=DEVICE
-    )
     sampler = EnergyGuidedSampler(model=model, tokenizer=tokenizer)
 
     prompt = [{"role": "user", "content": "Write a short story. Make it interesting."}]
-    config = GuidanceConfig(alpha=5.0, temperature=0.6)
+    config = GuidanceConfig(
+        alpha=10.0, temperature=0.6, steps=64, max_new_tokens=64,
+        rep_penalty=5.0, rep_allowance=1, fusion_weight=0.5,
+    )
 
     experiments = [
         ("baseline", None),
@@ -65,9 +66,11 @@ def main():
         print(f"  {name.upper()}")
         print(f"{'─' * 60}")
 
-        sampler.set_guidance(target_texts=target, alpha=config.alpha)
         if target:
+            sampler.set_guidance(target_texts=target, alpha=config.alpha)
             print(f"  Top tokens: {sampler.top_guided_tokens(8)}")
+        else:
+            sampler.clear_guidance()
 
         inputs = tokenizer.apply_chat_template(
             [prompt], add_generation_prompt=True, tokenize=True
@@ -75,14 +78,14 @@ def main():
         if isinstance(inputs[0], int):
             inputs = [inputs]
 
-        with sampler:
-            outputs = sampler.sample(inputs, config)
+        torch.manual_seed(42)
+        outputs = sampler.sample(inputs, config, return_dict=True)
 
         for seq in outputs.sequences:
             response = clean_response(tokenizer.decode(seq, skip_special_tokens=False))
-            metrics = evaluate_guidance(response, target, evaluator=evaluator)
             print(f"\n  {response[:250]}")
             if target:
+                metrics = evaluate_guidance(response, target, evaluator=sampler.embedder)
                 print(f"  target_sim={metrics['target_sim']}, coh={metrics['coherence']}")
 
 

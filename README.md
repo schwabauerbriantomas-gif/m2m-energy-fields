@@ -76,65 +76,99 @@ effect** where early committed tokens influence all subsequent generation.
    the positive feedback loop where energy forces the same token at every
    position. Adapted from frequency penalties in autoregressive decoding.
 
+## Quick Start
+
+```python
+from m2m_energy_fields import EnergyGuidedSampler, GuidanceConfig
+from dllm.utils import get_model, get_tokenizer
+import torch
+
+# Load any MDLM-compatible model
+model = get_model(model_args=type("Args", (), {
+    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
+    "dtype": torch.bfloat16,
+    "device_map": {"": 0},
+})()).eval()
+tokenizer = get_tokenizer(model_args=type("Args", (), {
+    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
+})())
+
+# Create guided sampler (builds MiniLM token table on first call)
+sampler = EnergyGuidedSampler(model=model, tokenizer=tokenizer)
+
+# Set energy field (topic steering — not in prompt)
+sampler.set_guidance(
+    target_texts=["ocean coral reef fish deep sea"],
+    alpha=10.0,
+)
+
+# Generate
+config = GuidanceConfig(
+    alpha=10.0,
+    temperature=0.6,
+    rep_penalty=5.0,
+    rep_allowance=1,
+    fusion_weight=0.5,  # convex 50/50
+)
+outputs = sampler.sample(inputs, config, return_dict=True)
+```
+
+## Installation
+
+```bash
+# Requires dllm framework (masked diffusion sampling)
+git clone https://github.com/ZHZisZZ/dllm.git
+cd dllm && pip install -e .
+
+# Install m2m-energy-fields
+cd ..
+git clone <this-repo>
+cd m2m-energy-fields
+pip install -e .
+```
+
+**Dependencies**: PyTorch ≥2.0, transformers ≥4.46, sentence-transformers, dllm
+
+<!-- RESULTS_PLACEHOLDER -->
+
 ## Performance
 
-### Quality vs. baseline diffusion (no guidance)
+All results from a single run of `tests/phase3_v13_fusion.py` with
+LLaDA-8B-Instruct (BF16, 64 steps, seed=42). Hardware: RTX 3090 24GB.
 
-**Model**: LLaDA-8B-Instruct · **Prompt**: *"Write a short story about something interesting."*
-**Hardware**: RTX 3090 24GB BF16
+**Prompt**: *"Write a short story about something interesting."* — the topic
+word never appears in the prompt; it only exists in the energy field.
 
-| Config | target_sim | coherence | diversity | quality |
-|---|---|---|---|---|
-| Baseline (no guidance) | — | 0.55 | 0.78 | — |
-| Ocean + model embeddings | 0.61 | 0.86 | 0.22 | 0.120 |
-| Ocean + MiniLM embeddings | 0.46 | 0.55 | 0.75 | 0.189 |
-| **Ocean + convex fusion** | 0.55 | 0.48 | 0.75 | **0.173** |
-| Cooking + convex fusion | 0.55 | 0.73 | 0.73 | **0.293** |
-| Space + convex fusion | 0.30 | 0.61 | 0.75 | 0.138 |
-| Horror + convex fusion | 0.47 | 0.34 | 0.77 | 0.120 |
+### Fusion strategy comparison
+
+| Strategy | ocean | horror | space | cooking | **mean** | std |
+|---|---|---|---|---|---|---|
+| model_only (4096D) | 0.120 | 0.126 | 0.151 | 0.085 | 0.120 | 0.023 |
+| minilm_only (384D) | 0.189 | 0.096 | 0.127 | 0.240 | 0.163 | 0.055 |
+| **convex 50/50** | **0.173** | **0.120** | **0.138** | **0.293** | **0.181** | 0.067 |
+| convex 30/70 | 0.189 | 0.118 | 0.207 | 0.040 | 0.138 | 0.066 |
+| convex 70/30 | 0.244 | 0.114 | 0.149 | 0.121 | 0.157 | 0.052 |
+| rrf k=60 | 0.192 | 0.138 | 0.161 | 0.140 | 0.158 | 0.022 |
+| geometric mean | 0.267 | 0.101 | 0.020 | 0.011 | 0.100 | 0.103 |
+| harmonic mean | 0.173 | 0.152 | 0.019 | 0.011 | 0.089 | 0.074 |
+| bayesian product | -0.003 | 0.016 | -0.027 | -0.022 | -0.009 | 0.017 |
 
 `quality = target_sim × coherence × diversity`
 
-### Convex fusion vs. single embedding sources
+**Convex 50/50 wins** with 0.181 mean quality — **+11% over the best single
+embedding source** (minilm_only: 0.163). The two spaces are orthogonal
+(Spearman ρ = 0.14): model embeddings capture co-occurrence ("turtle" near
+ocean contexts), MiniLM captures semantics ("scuba" ≈ "ocean"). Each
+compensates for the other's blind spots.
 
-| Topic | Model only | MiniLM only | **Convex 50/50** |
-|---|---|---|---|
-| ocean | 0.120 | 0.189 | 0.173 |
-| horror | 0.126 | 0.096 | 0.120 |
-| space | 0.151 | 0.127 | 0.138 |
-| cooking | 0.085 | 0.240 | **0.293** |
-| **mean** | **0.120** | **0.163** | **0.181** |
+### Per-topic detail (convex 50/50)
 
-Convex fusion beats the best single source by **+11%** on average quality.
-
-### Computational overhead
-
-| Component | Per-step cost | % of step |
-|---|---|---|
-| Model forward pass (8B BF16) | 85.0 ms | 82.4% |
-| Softmax + argmax + topk | 16.2 ms | 15.7% |
-| Energy guidance (EBM) | 1.4 ms | 1.4% |
-| Anti-rep penalty | 0.7 ms | 0.7% |
-
-**The EBM adds 2.1 ms per step — 2% overhead.** The bottleneck is entirely
-the diffusion model's forward pass, not the energy computation.
-
-### Throughput
-
-All measurements are from a single RTX 3090 with LLaDA-8B-Instruct (BF16,
-64 denoising steps, 200-token canvas):
-
-- **Total generation time**: 6.6 s (102.9 ms × 64 steps)
-- **Effective throughput**: ~30 TPS (tokens committed per second of wall time)
-- **EBM overhead per step**: 2.1 ms (1.4 ms energy + 0.7 ms anti-rep penalty)
-- **EBM as fraction of step**: 2.0%
-
-The bottleneck is the model forward pass at 85 ms/step (82% of wall time).
-Scaling to faster hardware or sparser models (MoE, FP8) would reduce the
-forward pass proportionally — the EBM's 2.1 ms is fixed-cost tensor ops
-(scatter_add, cosine similarity) that do not scale with model size.
-
-No measurements were taken on hardware other than the RTX 3090.
+| Topic | target_sim | coherence | diversity | quality |
+|---|---|---|---|---|
+| ocean | 0.486 | 0.477 | 0.746 | 0.173 |
+| horror | 0.466 | 0.336 | 0.768 | 0.120 |
+| space | 0.301 | 0.611 | 0.750 | 0.138 |
+| **cooking** | **0.546** | **0.734** | **0.732** | **0.293** |
 
 ### Example output
 
@@ -144,10 +178,41 @@ Energy target: `"cooking recipe chef kitchen delicious food"`
 > *"Once upon a time, there was a magical kitchen that could cook the most
 > delicious food imaginable. The kitchen was run by a chef named Chef Chef.
 > The chef had great passion for cooking and loved experimenting with new
-> recipes every day..."*
+> recipes and ingredients. One day, he set out to cook the most delicious
+> food in the..."*
 
 No mention of cooking in the prompt — the energy field steered topic selection
 through 64 denoising steps of bidirectional attention.
+
+### Computational overhead
+
+Per-step timing (RTX 3090, LLaDA-8B BF16, 64 steps, 128-token canvas):
+
+| Component | Per-step cost | % of step |
+|---|---|---|
+| Model forward pass (8B BF16) | 85.0 ms | 82.4% |
+| Softmax + argmax + topk | 16.2 ms | 15.7% |
+| Energy guidance (fusion + annealing) | 1.4 ms | 1.4% |
+| Anti-rep penalty | 0.7 ms | 0.7% |
+
+**The EBM adds 2.1 ms per step — 2% overhead.** The bottleneck is entirely
+the diffusion model's forward pass, not the energy computation.
+
+### Throughput
+
+All measurements are from a single RTX 3090 with LLaDA-8B-Instruct (BF16,
+64 denoising steps, 128-token canvas):
+
+- **Total generation time**: 6.6 s per sample (102.9 ms × 64 steps)
+- **EBM overhead per step**: 2.1 ms (1.4 ms energy + 0.7 ms anti-rep penalty)
+- **EBM as fraction of step**: 2.0%
+
+The bottleneck is the model forward pass at 85 ms/step (82% of wall time).
+Scaling to faster hardware or sparser models (MoE, FP8) would reduce the
+forward pass proportionally — the EBM's 2.1 ms is fixed-cost tensor ops
+(scatter_add, cosine similarity) that do not scale with model size.
+
+No measurements were taken on hardware other than the RTX 3090.
 
 ## Hardware Limitations
 
@@ -174,54 +239,6 @@ model-agnostic and do not depend on the underlying architecture being
 autoregressive or diffusion-based. The only requirement is access to the
 logits at each denoising step.
 
-## Quick Start
-
-```python
-from m2m_energy_fields import EnergyGuidedSampler, GuidanceConfig
-from dllm.utils import get_model, get_tokenizer
-import torch
-
-# Load any MDLM-compatible model
-model = get_model(model_args=type("Args", (), {
-    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
-    "dtype": torch.bfloat16,
-    "device_map": {"": 0},
-})()).eval()
-tokenizer = get_tokenizer(model_args=type("Args", (), {
-    "model_name_or_path": "GSAI-ML/LLaDA-8B-Instruct",
-})())
-
-# Create guided sampler
-sampler = EnergyGuidedSampler(model=model, tokenizer=tokenizer)
-
-# Set energy field (topic steering — not in prompt)
-sampler.set_guidance(
-    target_texts=["ocean coral reef fish deep sea"],
-    alpha=10.0,
-)
-
-# Generate
-config = GuidanceConfig(alpha=10.0, temperature=0.6)
-with sampler:  # patches forward, auto-restores on exit
-    outputs = sampler.sample(inputs, config)
-```
-
-## Installation
-
-```bash
-# Requires dllm framework (masked diffusion sampling)
-git clone https://github.com/ZHZisZZ/dllm.git
-cd dllm && pip install -e .
-
-# Install m2m-energy-fields
-cd ..
-git clone https://github.com/nousresearch/m2m-energy-fields.git
-cd m2m-energy-fields
-pip install -e .
-```
-
-**Dependencies**: PyTorch ≥2.0, transformers ≥4.46, sentence-transformers, dllm
-
 ## Iteration History
 
 This project went through 13 experimental versions. Each tested a specific
@@ -236,6 +253,8 @@ hypothesis and either advanced or was discarded:
 | v10 | Energy-model agreement veto | 0.035 | Softmax uncalibrated in partial context |
 | v11–v12 | MiniLM vs model embeddings | 0.118 | Semantic space ≠ co-occurrence (ρ=0.14) |
 | **v13** | **Convex dual-space fusion** | **0.181** | **Orthogonal spaces combine beneficially** |
+
+*Quality = target_sim × coherence × diversity. Values from v9/v13 experiment runs.*
 
 ### DSpark confidence head — tested, does not transfer
 
@@ -273,7 +292,7 @@ probabilities.
 m2m-energy-fields/
 ├── src/m2m_energy_fields/
 │   ├── __init__.py          # Public API
-│   ├── core.py              # EnergyGuidedSampler, EnergyField, GuidanceConfig
+│   ├── core.py              # EnergyGuidedSampler, GuidanceConfig, fusion functions
 │   └── metrics.py           # Evaluation: coherence, diversity, target_sim
 ├── examples/
 │   ├── guided_story_llada8b.py   # Full demo with LLaDA-8B
@@ -285,7 +304,7 @@ m2m-energy-fields/
 │   ├── phase3_v10_veto.py        # v10: DSpark veto (failed)
 │   ├── phase3_v12_head2head.py   # v12: model vs MiniLM comparison
 │   └── phase3_v13_fusion.py      # v13: convex fusion (final config)
-├── results/                      # JSONL results from all experiments
+├── results/                      # JSONL results from experiments
 ├── pyproject.toml
 └── README.md
 ```

@@ -34,6 +34,7 @@ COMBINED WITH ENERGY ANNEALING:
   - This naturally produces: topic set early, then model refines freely
 """
 
+import os
 import sys, time, json, math
 import torch, torch.nn.functional as F, numpy as np
 from collections import defaultdict
@@ -47,7 +48,7 @@ from dllm.utils import get_model, get_tokenizer
 
 DEVICE = "cuda"
 MODEL_ID = "GSAI-ML/LLaDA-8B-Instruct"
-RESULTS_FILE = "/root/m2m-energy-fields/results/phase3_v9_antirep.jsonl"
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "results", "phase3_v9_antirep.jsonl")
 
 
 def clean_response(text):

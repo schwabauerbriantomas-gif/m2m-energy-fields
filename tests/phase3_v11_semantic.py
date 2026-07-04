@@ -20,6 +20,7 @@ The token→MiniLM lookup table is precomputed ONCE at startup (151K tokens,
 Total EBM overhead: ~2.5ms/step vs 85ms forward pass → 3% overhead.
 """
 
+import os
 import sys, time, json, math
 import torch, torch.nn.functional as F, numpy as np
 from collections import defaultdict
@@ -33,11 +34,16 @@ from dllm.utils import get_model, get_tokenizer
 
 DEVICE = "cuda"
 MODEL_ID = "GSAI-ML/LLaDA-8B-Instruct"
-RESULTS_FILE = "/root/m2m-energy-fields/results/phase3_v11_semantic.jsonl"
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "..", "results", "phase3_v11_semantic.jsonl")
 
-# EBM-splats geometry
-sys.path.insert(0, "/root/EBM-splats/src/ebm")
-from geometry import normalize_sphere, project_to_tangent
+# Inlined from EBM-splats geometry module (avoids external dependency)
+def normalize_sphere(v):
+    """Normalize a vector to unit length on the hypersphere."""
+    return v / (v.norm() + 1e-8)
+
+def project_to_tangent(v, base):
+    """Project v onto the tangent space at base on the unit sphere."""
+    return v - (v * base).sum() * base
 
 
 class SemanticEnergyField:
