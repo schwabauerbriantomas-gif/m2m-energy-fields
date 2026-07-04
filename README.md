@@ -122,7 +122,7 @@ cd dllm && pip install -e .
 
 # Install m2m-energy-fields
 cd ..
-git clone <this-repo>
+git clone https://github.com/schwabauerbriantomas-gif/m2m-energy-fields.git
 cd m2m-energy-fields
 pip install -e .
 ```
