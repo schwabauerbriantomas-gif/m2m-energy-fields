@@ -190,33 +190,13 @@ through 64 denoising steps of bidirectional attention.
 
 ### Computational overhead
 
-Per-step timing (RTX 3090, LLaDA-8B BF16, 64 steps, 128-token canvas):
+Energy guidance adds tensor operations (scatter_add, cosine similarity) on top
+of each denoising step. These are fixed-cost operations that do not scale with
+model size. Detailed per-step profiling has not been recorded; the EBM overhead
+is negligible relative to the 8B model's forward pass.
 
-| Component | Per-step cost | % of step |
-|---|---|---|
-| Model forward pass (8B BF16) | 85.0 ms | 82.4% |
-| Softmax + argmax + topk | 16.2 ms | 15.7% |
-| Energy guidance (fusion + annealing) | 1.4 ms | 1.4% |
-| Anti-rep penalty | 0.7 ms | 0.7% |
-
-**The EBM adds 2.1 ms per step — 2% overhead.** The bottleneck is entirely
-the diffusion model's forward pass, not the energy computation.
-
-### Throughput
-
-All measurements are from a single RTX 3090 with LLaDA-8B-Instruct (BF16,
-64 denoising steps, 128-token canvas):
-
-- **Total generation time**: 6.6 s per sample (102.9 ms × 64 steps)
-- **EBM overhead per step**: 2.1 ms (1.4 ms energy + 0.7 ms anti-rep penalty)
-- **EBM as fraction of step**: 2.0%
-
-The bottleneck is the model forward pass at 85 ms/step (82% of wall time).
-Scaling to faster hardware or sparser models (MoE, FP8) would reduce the
-forward pass proportionally — the EBM's 2.1 ms is fixed-cost tensor ops
-(scatter_add, cosine similarity) that do not scale with model size.
-
-No measurements were taken on hardware other than the RTX 3090.
+No timing measurements have been validated and recorded. If you run benchmarks,
+please contribute results.
 
 ## Hardware Limitations
 
@@ -268,7 +248,8 @@ head to decide which draft tokens to accept. We tested adapting this pattern
 autoregressive decoding where the model's softmax is well-calibrated (causal
 context → peaked distribution). In masked diffusion, the canvas is partially
 masked → the model's softmax is flat (P[any_token] ≈ 0.001) → the confidence
-proxy vetoes 43% of all tokens, effectively disabling energy guidance.
+proxy vetoes too many tokens (raw veto counts of 23-30 out of 128 per step in
+experiments), effectively disabling energy guidance.
 
 The anti-repetition penalty (v9) solves the same problem (preventing bad
 tokens from entering the canvas) but using observable post-hoc signal (token
@@ -281,7 +262,7 @@ probabilities.
 - You need implicit topic control (target must not appear in prompt)
 - You need multi-axis composition (`0.7·ocean + 0.3·science`)
 - You need dynamic steering mid-generation (change direction between steps)
-- You want zero-overhead guidance (2% of forward pass)
+- You want low-overhead guidance (fixed-cost tensor ops, negligible vs forward pass)
 - Your base model is a masked diffusion LM
 
 **Don't use it when:**
